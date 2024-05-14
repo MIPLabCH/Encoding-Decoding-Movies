@@ -413,7 +413,7 @@ class ED_Loss(nn.Module):
 
 ### Training loop ###
 
-def train_model(input, label, model, num_epochs, lr, criterion, optimizer, batch_size, device, save_model_as, pretrained_decoder=None, start_epoch=1, start_loss=None):
+def train_model(input, label, model, num_epochs, lr, criterion, optimizer, batch_size, device, save_model_as, pretrained_decoder=None, start_epoch=1, start_loss=None, model_to_train=None):
     """
     Universal training loop for models with variable output losses. Handles different models with a common interface.
 
@@ -431,6 +431,25 @@ def train_model(input, label, model, num_epochs, lr, criterion, optimizer, batch
         model (torch.nn.Module): Trained model.
     """
     tic = time.time()
+
+    model_type = ['encoder', 'decoder', 'encoder_decoder']
+    if model_to_train not in model_type:
+        print(f'model_to_train: {model_to_train} not recognized. Must be one of {model_type}')
+        return None, None
+
+    print(f'### Training {model_to_train} on input of shape {input.shape} ###')
+    if pretrained_decoder:
+        decoder = Decoder(label.shape[1])
+        state_dict = torch.load(pretrained_decoder)
+        decoder.load_state_dict(state_dict)
+        decoder = decoder.to(device)
+        for param in decoder.parameters():
+            param.requires_grad = False
+        decoder.eval()
+        print(f'Also using pretrained decoder {pretrained_decoder}')
+
+    print(f"Start training from epoch {start_epoch} with initial loss {start_loss}")
+    
     input = torch.from_numpy(input)
     label = torch.from_numpy(label)
 
@@ -447,16 +466,6 @@ def train_model(input, label, model, num_epochs, lr, criterion, optimizer, batch
     model = model.to(device)
     criterion = criterion.to(device)
 
-    if pretrained_decoder:
-        decoder = Decoder(label.shape[1])
-        state_dict = torch.load(pretrained_decoder)
-        decoder.load_state_dict(state_dict)
-        decoder = decoder.to(device)
-        for param in decoder.parameters():
-            param.requires_grad = False
-
-    print(f"Starting training from epoch {start_epoch} with initial loss {start_loss}")
-
     history = {
         'total_loss': [],
         'other_metrics': [],
@@ -470,15 +479,25 @@ def train_model(input, label, model, num_epochs, lr, criterion, optimizer, batch
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
 
-            outputs = model(inputs.float())
-
-            if pretrained_decoder:
-                decoder.eval()
-                encoder_outputs = outputs.to(device)
-                decoder_outputs = decoder(encoder_outputs.float())
-                *loss_metrics, total_loss, metrics_names = criterion(encoder_outputs, labels, decoder_outputs, inputs[..., 15])
+            # Determine the outputs based on the model configuration
+            if model_to_train == 'encoder_decoder':
+                model_outputs, decoder_outputs = model(inputs.float())
             else:
-                *loss_metrics, total_loss, metrics_names = criterion(outputs, labels)  # Unpack all losses, total_loss is before last, metrics names are last
+                model_outputs = model(inputs.float())
+                if pretrained_decoder:
+                    # If there's a pretrained decoder, use it with encoder outputs
+                    decoder_outputs = decoder(model_outputs.float())
+                else:
+                    # If no pretrained decoder, proceed with encoder outputs as main outputs
+                    decoder_outputs = None
+        
+            # Apply the appropriate criterion based on the presence of decoder outputs
+            if model_to_train == 'decoder':
+                *loss_metrics, total_loss, metrics_names = criterion(model_outputs, labels[..., 15])
+            elif decoder_outputs is None:
+                *loss_metrics, total_loss, metrics_names = criterion(model_outputs, labels)
+            else:
+                *loss_metrics, total_loss, metrics_names = criterion(model_outputs, labels, decoder_outputs, inputs[..., 15])
 
             total_loss.backward()
             optimizer.step()
@@ -499,6 +518,7 @@ def train_model(input, label, model, num_epochs, lr, criterion, optimizer, batch
     plot_train_losses(history, start_epoch)
 
     print("Training completed. Total time: {:.2f} minutes".format((time.time() - tic) / 60))
+    print('---')
     return model, history
 
 def save_checkpoint(model, optimizer, epoch, loss):
@@ -557,3 +577,118 @@ def plot_train_losses(history, start_epoch):
         plt.xlabel('epoch')
         plt.ylabel('value')
         plt.show()
+
+### Testing lopp ###
+
+def test_model(inputs_dict, labels_dict, model, criterion, device, pretrained_decoder=None, model_to_test=None):
+    """
+    Modular testing function for models with variable architectures (Encoder, Decoder, Encoder-Decoder).
+    
+    Parameters:
+        inputs_dict (dict): Dictionary of input data arrays.
+        labels_dict (dict): Dictionary of label data arrays.
+        model (torch.nn.Module): Model to be tested.
+        criterion (callable): Loss function that supports different configurations.
+        device (str): Device to perform the testing on ('cpu' or 'cuda').
+        pretrained_decoder (str, optional): Path to pretrained decoder model if used in an encoder-decoder setup.
+        
+    Returns:
+        dict: A dictionary containing model predictions and loss metrics.
+    """
+    print('Start testing:')
+    tic = time.time()
+
+    model_type = ['encoder', 'decoder', 'encoder_decoder']
+    if model_to_test not in model_type:
+        print(f'model_to_test: {model_to_test} not recognized. Must be one of {model_type}')
+        return None, None
+
+    videos = list(inputs_dict.keys())
+    inputs_shape = list(inputs_dict[videos[0]].shape)
+    inputs_shape[0] = 'TR'
+    print(f'### Testing {model_to_test} on inputs of shape {inputs_shape} over {len(videos)} videos ###')
+
+    criterion = criterion.to(device)
+    # Set model in testing phase
+    model.to(device)
+    model.eval()
+
+    # Load and set pretrained decoder if specified
+    #decoder = None
+    if pretrained_decoder:
+        decoder = Decoder(labels_dict[next(iter(labels_dict))].shape[1])  # Assuming shape is consistent across labels
+        state_dict = torch.load(pretrained_decoder)
+        decoder.load_state_dict(state_dict)
+        decoder.to(device)
+        for param in decoder.parameters():
+            param.requires_grad = False
+        decoder.eval()
+        print(f'Also using pretrained decoder {pretrained_decoder}')
+
+    if model_to_test != 'encoder_decoder' and pretrained_decoder is None:
+        results = {
+            model_to_test + '_predictions': {},
+            'total_losses': {}
+        }
+    else:
+        results = {
+            'encoder_predictions': {},
+            'decoder_predictions': {},
+            'total_losses': {}
+        }
+
+    # Process each item in the inputs and labels dictionaries
+    for key in inputs_dict.keys():
+        input_tensor = torch.from_numpy(inputs_dict[key].astype('float32'))
+        label_tensor = torch.from_numpy(labels_dict[key].astype('float32'))
+
+        test_set = torch.utils.data.TensorDataset(input_tensor, label_tensor)
+        test_loader = torch.utils.data.DataLoader(
+            test_set,
+            batch_size=1,  # Processing one TR at a time
+            shuffle=False,
+            pin_memory=torch.cuda.is_available(),
+            num_workers=4
+        )
+
+        model_outputs, decoder_outputs, total_losses = [], [], []
+        with torch.no_grad():
+            for input, label in test_loader:
+                input, label = input.to(device), label.to(device)
+
+                decoder_output = None
+                
+                if model_to_test == 'encoder_decoder':
+                    model_output, decoder_output = model(input.float())
+                elif pretrained_decoder:
+                    model_output = model(input.float()).to(device)
+                    decoder_output = decoder(model_output.float())
+                else:
+                    model_output = model(input.float())
+                        
+                model_outputs.append(model_output.detach().cpu())
+                if decoder_output is not None:
+                    decoder_outputs.append(decoder_output.detach().cpu())
+            
+                # Apply the appropriate criterion based on the presence of decoder outputs
+                if model_to_test == 'decoder':
+                    *loss_metrics, total_loss, metrics_names = criterion(model_output, label[..., 15])
+                elif decoder_output is None:
+                    *loss_metrics, total_loss, metrics_names = criterion(model_output, label)
+                else:
+                    *loss_metrics, total_loss, metrics_names = criterion(model_output, label, decoder_output, input[..., 15])
+                
+                total_losses.append(total_loss.item())
+
+        if model_to_test != 'encoder_decoder' and pretrained_decoder is None:
+            results[model_to_test + '_predictions'][key] = torch.cat(model_outputs, dim=0).numpy()
+        else:
+            results['encoder_predictions'][key] = torch.cat(model_outputs, dim=0).numpy()
+            results['decoder_predictions'][key] = torch.cat(decoder_outputs, dim=0).numpy()
+        
+        results['total_losses'][key] = np.asarray(total_losses)
+
+    print("Testing completed. Total time: {:.2f} minutes".format((time.time() - tic) / 60))
+    print('---')
+    return results
+
