@@ -22,3 +22,4 @@ This repository contains several key scripts and notebooks essential to the proj
 - **models.py**: Definition of model architectures and functions for training and testing the models.
 - **visualisation.py**: Definition of functions for visualizing the results of the models.
 - **imports.py**: Contains all necessary imports.
+- **Project Overview.pdf**: Presentation of the project covering data preprocessing, model architectures and results.
