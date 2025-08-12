@@ -1,8 +1,9 @@
 ## Deep Neural Encoder-Decoder Model To Relate fMRI Brain Activity With Naturalistic Stimuli
 
-**Student:** Florian David | florian.david@epfl.ch  
+**Students:** Florian David | florian.david@epfl.ch  / Rodrigo Almeida Saraiva Dos Anjos | rodrigo.anjos@epfl.ch
+
 **Institution:** Neuro-X, EPFL  
-**Last Update:** 09/02/2025  
+**Last Update:** 09/07/2025  
 **Host Lab:** Medical Image Processing Lab (MIP:Lab), EPFL  
 **Supervisor:** Michael Chan  
 
